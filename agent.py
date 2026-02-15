@@ -21,30 +21,20 @@ BASH_TIMEOUT = 30
 with open(os.path.join(BASE_DIR, "system_prompt.txt")) as f:
     SYSTEM_PROMPT = f.read()
 
+with open(os.path.join(BASE_DIR, "compact_prompt.txt")) as f:
+    COMPACT_PROMPT = f.read()
+
 COMPACT_BUFFER = 20_000
 CHARS_PER_TOKEN = 4
+PRUNE_PROTECT = 40_000
+PRUNE_MINIMUM = 20_000
 
-COMPACT_PROMPT = """\
-Summarize our conversation so far so another instance of you can continue the work.
-Be detailed about what was done and what needs to happen next.
-
-Use this template:
-
-## Goal
-What is the user trying to accomplish?
-
-## Instructions
-- Important instructions or constraints from the user
-
-## Discoveries
-Key things learned during the conversation.
-
-## Accomplished
-What was completed, what is in progress, and what remains?
-
-## Relevant files
-Files that were read, edited, or created (with brief notes).
-"""
+COMPACT_SYSTEM = (
+    "You are a summarization assistant. When asked to summarize, provide a "
+    "detailed but concise summary of the conversation. Focus on information "
+    "that would be helpful for continuing the conversation. Do not respond to "
+    "any questions in the conversation, only output the summary."
+)
 
 TOOLS = [
     {
@@ -161,8 +151,27 @@ def tool_write_file(path, content):
 
 # --- Auto Compact ---
 
+def get_token_count(response):
+    """Extract total token count from LLM response, or None if unavailable."""
+    meta = getattr(response, "usage_metadata", None)
+    if meta:
+        input_t = meta.get("input_tokens", 0)
+        output_t = meta.get("output_tokens", 0)
+        if input_t > 0:
+            return input_t + output_t
+    resp_meta = getattr(response, "response_metadata", None)
+    if resp_meta:
+        usage = resp_meta.get("token_usage") or resp_meta.get("usage", {})
+        if isinstance(usage, dict):
+            prompt_t = usage.get("prompt_tokens", 0) or usage.get("input_tokens", 0)
+            compl_t = usage.get("completion_tokens", 0) or usage.get("output_tokens", 0)
+            if prompt_t > 0:
+                return prompt_t + compl_t
+    return None
+
+
 def estimate_tokens(messages):
-    """Estimate total tokens in the conversation using character heuristic."""
+    """Fallback: estimate total tokens using character heuristic (len/4)."""
     total_chars = 0
     for msg in messages:
         if isinstance(msg.content, str):
@@ -175,17 +184,62 @@ def estimate_tokens(messages):
     return total_chars // CHARS_PER_TOKEN
 
 
-def is_overflow(messages, context_limit):
+def is_overflow(token_count, messages, context_limit):
     """Check if conversation tokens are approaching the context limit."""
     if context_limit <= 0:
         return False
-    return estimate_tokens(messages) >= context_limit - COMPACT_BUFFER
+    count = token_count if token_count else estimate_tokens(messages)
+    return count >= context_limit - COMPACT_BUFFER
+
+
+def prune(messages):
+    """Clear old tool outputs to reduce context size without full summarization."""
+    user_count = 0
+    cutoff = len(messages)
+    for i in range(len(messages) - 1, -1, -1):
+        if isinstance(messages[i], HumanMessage):
+            user_count += 1
+            if user_count >= 2:
+                cutoff = i
+                break
+
+    tool_indices = []
+    for i in range(cutoff):
+        if isinstance(messages[i], ToolMessage) and messages[i].content != "[output cleared]":
+            est = len(messages[i].content) // CHARS_PER_TOKEN
+            tool_indices.append((i, est))
+
+    if not tool_indices:
+        return
+
+    protected = 0
+    pruneable = []
+    for idx, est in reversed(tool_indices):
+        if protected < PRUNE_PROTECT:
+            protected += est
+        else:
+            pruneable.append(idx)
+
+    total_pruneable = sum(len(messages[i].content) // CHARS_PER_TOKEN for i in pruneable)
+    if total_pruneable < PRUNE_MINIMUM:
+        return
+
+    for idx in pruneable:
+        messages[idx] = ToolMessage(
+            content="[output cleared]",
+            tool_call_id=messages[idx].tool_call_id,
+        )
+    print(f"[prune] Cleared {len(pruneable)} old tool outputs.")
 
 
 def compact(llm_base, messages):
     """Summarize the conversation and return a fresh message list."""
     print("\n[auto-compact] Context approaching limit. Summarizing conversation...")
-    compact_messages = messages + [HumanMessage(content=COMPACT_PROMPT)]
+    compact_messages = [
+        SystemMessage(content=COMPACT_SYSTEM),
+        *messages[1:],
+        HumanMessage(content=COMPACT_PROMPT),
+    ]
     summary_response = llm_base.invoke(compact_messages)
     summary = summary_response.content
     print("[auto-compact] Done. Continuing with summarized context.\n")
@@ -193,7 +247,10 @@ def compact(llm_base, messages):
         SystemMessage(content=SYSTEM_PROMPT),
         HumanMessage(content="What did we do so far?"),
         AIMessage(content=summary),
-        HumanMessage(content="Continue where you left off. If you have next steps, proceed. Otherwise, ask for clarification."),
+        HumanMessage(
+            content="Continue where you left off. If you have next steps, "
+            "proceed. Otherwise, ask for clarification."
+        ),
     ]
 
 
@@ -204,6 +261,7 @@ def make_llm(provider):
         model=provider["model"],
         api_key=provider["api_key"],
         base_url=provider["base_url"],
+        stream_usage=True,
     )
     return base, base.bind_tools(TOOLS)
 
@@ -239,6 +297,7 @@ def main():
     llm_base, llm = make_llm(provider)
     context_limit = provider.get("context_limit", 128_000)
     messages = [SystemMessage(content=SYSTEM_PROMPT)]
+    last_token_count = None
     print("agent-42 (ctrl+c para sair)\n")
 
     while True:
@@ -253,14 +312,15 @@ def main():
 
         messages.append(HumanMessage(content=user_input))
 
-        # O loop do agente: chama a API, se vier tool_use executa e manda de volta.
-        # Quando vier só texto, exibe e volta pro input do usuário.
         while True:
-            if is_overflow(messages, context_limit):
+            if is_overflow(last_token_count, messages, context_limit):
                 messages = compact(llm_base, messages)
+                last_token_count = None
 
             response = stream_response(llm, messages)
             messages.append(response)
+
+            last_token_count = get_token_count(response)
 
             if not response.tool_calls:
                 print("\n")
@@ -270,6 +330,8 @@ def main():
                 print(f"\n[{tc['name']}] {json.dumps(tc['args'], ensure_ascii=False)}")
                 result = execute_tool(tc["name"], tc["args"])
                 messages.append(ToolMessage(content=result, tool_call_id=tc["id"]))
+
+        prune(messages)
 
 if __name__ == "__main__":
     main()
