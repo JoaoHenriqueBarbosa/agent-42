@@ -1,0 +1,7 @@
+services:
+  sandbox:
+    build: .
+    container_name: agent-42-sandbox
+    volumes:
+      - ./workspace:/workspace
+    network_mode: none
