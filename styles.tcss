@@ -4,14 +4,14 @@
 
 #chat-view {
     height: 1fr;
-    padding: 0 1;
+    padding: 1;
 }
 
 #input-container {
     height: auto;
     min-height: 3;
     max-height: 12;
-    padding: 0 1;
+    padding: 1;
 }
 
 #input {
@@ -32,7 +32,6 @@ StatusFooter {
 ChatMessage {
     width: 1fr;
     height: auto;
-    padding: 0 1;
     margin: 0 0 1 0;
 }
 
@@ -44,6 +43,10 @@ ChatMessage.assistant-message {
     border-left: wide $secondary;
 }
 
+ChatMessage MarkdownBlock {
+    margin: 0;
+}
+
 /* ── Tools ── */
 
 ToolWidget {
@@ -51,7 +54,7 @@ ToolWidget {
     height: auto;
     margin: 0 0 1 0;
     border-left: wide $panel;
-    padding: 0 1;
+    padding: 0 2;
 }
 
 ToolWidget .tool-header {
@@ -100,8 +103,8 @@ ThinkingIndicator {
 
 #provider-picker {
     align: center middle;
-    width: 100%;
-    height: 100%;
+    width: 1fr;
+    height: auto;
 }
 
 #provider-picker-box {
@@ -117,13 +120,23 @@ ThinkingIndicator {
     margin: 0 0 1 0;
 }
 
-#provider-picker-box Button {
+#provider-list {
     width: 100%;
-    margin: 0 0 0 0;
+    height: auto;
+}
+
+#provider-list ListItem {
+    height: 1;
+    padding: 0;
+}
+
+#provider-list ListItem Label {
+    width: 100%;
+    text-align: center;
 }
 
 /* ── Scrollbar ── */
 
-VerticalScroll > .scrollbar {
+VerticalScroll>.scrollbar {
     width: 1;
 }

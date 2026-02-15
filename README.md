@@ -1,24 +1,24 @@
 # agent-42
 
-A minimal autonomous coding agent. No frameworks, no magic — just a while loop with tool use. Now with a rich TUI powered by [Textual](https://textual.textualize.io/).
+A minimal autonomous coding agent that actually works. No frameworks, no magic — just a `while` loop, tool use, and a rich TUI.
 
-```
-> Create a Flask API with a /health endpoint
+**The entire agent is ~70 lines of logic.** The rest is UI.
 
-[write_file] {"path": "app.py", "content": "from flask import Flask..."}
-[bash] {"command": "pip install flask && python app.py &"}
-[bash] {"command": "curl localhost:5000/health"}
+<p align="center">
+  <img src="assets/provider-picker.png" width="720" alt="Provider selection" />
+</p>
 
-Done. The API is running and /health returns {"status": "ok"}.
-```
+<p align="center">
+  <img src="assets/thinking.png" width="720" alt="Streaming response with thinking indicator" />
+</p>
 
-## Why
+<p align="center">
+  <img src="assets/tool-result.png" width="720" alt="Tool execution with collapsible results" />
+</p>
 
-The secret of a good coding agent is the simplicity of the loop. The API responds with a tool call, streaming stops, the system executes the tool locally, and the result goes back as a new message. This synchronous, atomic cycle enables **interleaved thinking** — the model reasons again at each step with fresh context.
+## The idea
 
-Any abstraction over this loop that obscures this mechanism is cost without benefit.
-
-## How it works
+Most agent frameworks bury the actual mechanism under layers of abstraction — chains, planners, memory modules, orchestrators. agent-42 does the opposite: it exposes the loop.
 
 ```python
 while True:
@@ -33,139 +33,117 @@ while True:
     messages.append(user_input())
 ```
 
-That's it. The intelligence is in the model, not in the code.
+The model calls a tool, gets the result, reasons again. That's **interleaved thinking** — and it's all you need for an agent that writes code, runs it, reads files, fixes bugs, and iterates autonomously.
+
+The intelligence is in the model, not in the code.
+
+## Features
+
+- **Rich TUI** — Textual-powered interface with markdown rendering, streaming, collapsible tool widgets, input history
+- **Any LLM** — Works with any OpenAI-compatible API (Anthropic, OpenAI, Z.AI, Ollama, etc.)
+- **Sandboxed execution** — Shell commands run in Docker with no network access
+- **Auto-compaction** — Summarizes conversation when approaching context limits
+- **Zero framework lock-in** — LangChain is used only as a provider adapter. Rip it out in 10 minutes.
 
 ## Architecture
 
 ```
-┌─────────────┐     ┌──────────────────┐     ┌─────────────────┐
+┌──────────────┐     ┌──────────────────┐     ┌─────────────────┐
 │  Textual TUI │────▶│    agent.py      │────▶│   LLM Provider  │
 │  (app.py)    │◀────│  async run_turn  │◀────│  (any OpenAI-   │
-└─────────────┘     │                  │     │   compatible)   │
-                    │  tool dispatch:  │     └─────────────────┘
-                    │  match/case      │
-                    └──────┬───────────┘
-                           │
-              ┌────────────┼────────────┐
-              ▼            ▼            ▼
-        ┌──────────┐ ┌──────────┐ ┌──────────┐
-        │   bash   │ │read_file │ │write_file│
-        │ (docker) │ │ (host)   │ │ (host)   │
-        └──────────┘ └──────────┘ └──────────┘
-              │
-              ▼
-        ┌──────────────┐
-        │   Docker     │
-        │   sandbox    │
-        │  (no network)│
-        └──────────────┘
+└──────────────┘     │                  │     │   compatible)   │
+                     │  tool dispatch:  │     └─────────────────┘
+                     │  match/case      │
+                     └──────┬───────────┘
+                            │
+               ┌────────────┼────────────┐
+               ▼            ▼            ▼
+         ┌──────────┐ ┌──────────┐ ┌──────────┐
+         │   bash   │ │read_file │ │write_file│
+         │ (docker) │ │ (host)   │ │ (host)   │
+         └──────────┘ └──────────┘ └──────────┘
+               │
+               ▼
+         ┌──────────────┐
+         │   Docker     │
+         │   sandbox    │
+         │  (no network)│
+         └──────────────┘
 ```
 
-- **app.py** — Textual App entrypoint, composes the TUI and runs the agent loop as an async worker
-- **ui.py** — Textual widgets: ChatView, ChatMessage (markdown streaming with debounce), ToolWidget (collapsible), ChatInput (history, Enter/Shift+Enter), StatusFooter
-- **agent.py** — async `run_turn()` function with callbacks dict for UI decoupling; also keeps CLI `main()` fallback
-- **bash** runs inside a Docker container with no network access
-- **read_file** and **write_file** operate on the host through a shared `workspace/` volume
-- All providers go through a single `ChatOpenAI` — LangChain is used only as a provider adapter
+| File | Role |
+|------|------|
+| `app.py` | Textual entrypoint — composes TUI, runs agent as async worker |
+| `ui.py` | Widgets: ChatView, ChatMessage (streamed markdown), ToolWidget (collapsible), ChatInput (history) |
+| `agent.py` | `run_turn()` — the actual agent loop, decoupled from UI via callbacks |
+| `tools.py` | Tool definitions (plain dicts) + `execute_tool` dispatch |
+| `llm.py` | Provider adapter — sync and async streaming via `ChatOpenAI` |
+| `context.py` | Auto-compaction and pruning |
+| `config.py` | Provider configuration from `.env` |
 
-## Tools
-
-| Tool | Description |
-|------|-------------|
-| `bash` | Execute shell commands in an isolated Docker container. Timeout: 30s. |
-| `read_file` | Read a file with line numbers. Supports `start_line`/`end_line` ranges. |
-| `write_file` | Create or overwrite a file. Creates parent directories automatically. |
-
-Tools are defined as plain Python dicts (OpenAI function calling format). No `@tool` decorators, no LangChain tooling abstractions. Execution is a `match/case` in the main loop.
-
-## Providers
-
-Any OpenAI-compatible API works. Preconfigured:
-
-| Provider | Model | Endpoint |
-|----------|-------|----------|
-| Anthropic | claude-sonnet-4 | `api.anthropic.com/v1/` (OpenAI-compatible) |
-| OpenAI | gpt-4o-mini | `api.openai.com/v1` |
-| Z.AI | GLM-4.5-air | `api.z.ai/api/coding/paas/v4` |
-
-Switch providers at startup — no code changes needed. Add your own by editing `config.py`.
-
-## Setup
+## Quickstart
 
 **Requirements:** Python 3.10+, Docker
 
 ```bash
-# Clone
 git clone https://github.com/JoaoHenriqueBarbosa/agent-42.git
 cd agent-42
 
-# Python dependencies
 python -m venv venv
 source venv/bin/activate
 pip install langchain-openai python-dotenv textual
 
-# Docker sandbox
 docker compose up -d
 
-# API keys
 cp .env.example .env
-# Edit .env with your keys
+# Add your API keys
 ```
 
-## Configuration
-
-Create a `.env` file:
-
-```env
-# At least one provider is required
-
-# Anthropic (via OpenAI-compatible endpoint)
-ANTHROPIC_API_KEY=sk-ant-...
-ANTHROPIC_BASE_URL=https://api.anthropic.com/v1/
-ANTHROPIC_MODEL=claude-sonnet-4-20250514
-
-# OpenAI
-OPENAI_API_KEY=sk-proj-...
-OPENAI_BASE_URL=https://api.openai.com/v1
-OPENAI_MODEL=gpt-4o-mini
-
-# Z.AI (or any OpenAI-compatible provider)
-ZAI_API_KEY=your-key
-ZAI_BASE_URL=https://api.z.ai/api/coding/paas/v4
-ZAI_MODEL=GLM-4.5-air
-```
-
-## Run
-
-**TUI (recommended):**
+**Run:**
 
 ```bash
-venv/bin/python app.py
+python app.py
 ```
 
-**CLI (fallback):**
+Select a provider with arrow keys, hit Enter, and start coding.
 
-```bash
-venv/bin/python agent.py
-```
+## Providers
+
+Any OpenAI-compatible API works out of the box:
+
+| Provider | Model | Endpoint |
+|----------|-------|----------|
+| Anthropic | claude-sonnet-4 | `api.anthropic.com/v1/` |
+| OpenAI | gpt-4o-mini | `api.openai.com/v1` |
+| Z.AI | GLM-4.5-air | `api.z.ai/api/coding/paas/v4` |
+
+Add your own in `config.py`. Any endpoint that speaks the OpenAI chat format works — local models via Ollama, LM Studio, etc.
+
+## Tools
+
+| Tool | What it does |
+|------|-------------|
+| `bash` | Runs shell commands in an isolated Docker container (no network, 30s timeout) |
+| `read_file` | Reads files with line numbers, supports ranges |
+| `write_file` | Creates or overwrites files, auto-creates directories |
+
+Tools are plain Python dicts in OpenAI function calling format. No decorators, no abstractions. Dispatch is a `match/case`.
 
 ## Design decisions
 
-**Why LangChain at all?** It solves exactly one problem: not having to maintain separate HTTP clients for different message formats. If LangChain dies tomorrow, the migration is replacing `.stream()` with direct HTTP calls. Nothing else changes.
+**Why a while loop?** Because that's what an agent is. The model decides, acts, observes, decides again. Any layer on top of this that doesn't add new capability is dead weight.
 
-**Why not more LangChain?** Chains, agents, memory modules, output parsers — none of that is used. The loop is too simple to benefit from abstraction. Our context management is specific to our case. Tool descriptions need precise control over the JSON schema the model receives.
+**Why LangChain at all?** One reason: `ChatOpenAI` normalizes message formats across providers. If LangChain dies tomorrow, the migration is swapping `.stream()` for HTTP calls. Nothing else changes.
 
-**Why Docker for bash?** The model can run arbitrary shell commands. Docker with `network_mode: none` provides isolation without complexity. The model doesn't know it's in a container.
+**Why Docker for bash?** The model runs arbitrary shell commands. Docker with `network_mode: none` gives isolation for free. The model doesn't know it's in a container.
 
-**Why `ChatOpenAI` for Anthropic?** Anthropic offers an [OpenAI-compatible endpoint](https://docs.anthropic.com/en/api/openai-sdk). Using a single `ChatOpenAI` class for all providers eliminates format differences (Anthropic returns content as a list of blocks, OpenAI as a string). Zero branching by provider in the entire codebase.
+**Why Textual?** A coding agent deserves better than `print()`. Markdown rendering, streaming, collapsible tool output, input history — all without leaving the terminal.
 
 ## What kind of agent is this?
 
-agent-42 implements what is essentially a **native tool use agent loop** — the practical evolution of the [ReAct](https://arxiv.org/abs/2210.03629) pattern (Yao et al., 2022).
+agent-42 is a **native tool use agent loop** — the practical evolution of [ReAct](https://arxiv.org/abs/2210.03629) (Yao et al., 2022).
 
-ReAct formalized the cycle of *reason → act → observe → reason again*, but at the time there was no native tool use in LLM APIs. The original approach forced the model to generate explicit tokens like `Thought:`, `Action:`, `Observation:` via prompting — a hack to simulate the loop.
-
-With native tool use APIs, the pattern became infrastructure:
+ReAct formalized *reason → act → observe → reason again*, but relied on prompting hacks (`Thought:`, `Action:`, `Observation:` tokens). With native tool use APIs, the pattern became infrastructure:
 
 | ReAct concept | Native implementation |
 |---|---|
@@ -173,21 +151,21 @@ With native tool use APIs, the pattern became infrastructure:
 | Action | `tool_use` block (typed, structured) |
 | Observation | `tool_result` message back to the model |
 
-agent-42 is this loop without any translation layer. The model speaks directly to the system. That's why it delivers more agency than most frameworks — there's no indirection obscuring the mechanism.
+agent-42 is this loop with zero translation layers. The model speaks directly to the system.
 
 ### References
 
-1. **ReAct: Synergizing Reasoning and Acting in Language Models** — Yao et al., 2022. The original paper that formalized the reason-act-observe pattern. [arXiv:2210.03629](https://arxiv.org/abs/2210.03629)
-2. **Toolformer: Language Models Can Teach Themselves to Use Tools** — Schick et al., 2023. Shows that models learn to use tools in an emergent way. [arXiv:2302.04761](https://arxiv.org/abs/2302.04761)
-3. **Tool Use — Anthropic Documentation.** Documents the native tool use pattern that replaced ReAct-style prompting. [docs.anthropic.com](https://docs.anthropic.com/en/docs/build-with-claude/tool-use)
-4. **Function Calling — OpenAI Documentation.** OpenAI's equivalent implementation. [platform.openai.com](https://platform.openai.com/docs/guides/function-calling)
+1. **ReAct: Synergizing Reasoning and Acting in Language Models** — Yao et al., 2022. [arXiv:2210.03629](https://arxiv.org/abs/2210.03629)
+2. **Toolformer: Language Models Can Teach Themselves to Use Tools** — Schick et al., 2023. [arXiv:2302.04761](https://arxiv.org/abs/2302.04761)
+3. **Tool Use** — [Anthropic Docs](https://docs.anthropic.com/en/docs/build-with-claude/tool-use)
+4. **Function Calling** — [OpenAI Docs](https://platform.openai.com/docs/guides/function-calling)
 
 ## Roadmap
 
-- [x] Context compaction (summarize conversation when approaching token limit)
-- [x] Textual TUI with markdown rendering, tool widgets, streaming
+- [x] Context compaction
+- [x] Textual TUI with markdown streaming and tool widgets
 - [ ] Ctrl+C to cancel running tools
-- [ ] Session persistence to disk
+- [ ] Session persistence
 - [ ] System prompt refinement
 
 ## License

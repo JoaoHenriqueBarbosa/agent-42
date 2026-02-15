@@ -8,7 +8,7 @@ from pathlib import Path
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Vertical
-from textual.widgets import Button, Label, Static
+from textual.widgets import Label, ListItem, ListView, Static
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -46,16 +46,18 @@ class Agent42App(App):
         with Container(id="provider-picker"):
             with Vertical(id="provider-picker-box"):
                 yield Label("Select Provider")
-                for name in PROVIDERS:
-                    yield Button(name, id=f"provider-{name}")
+                with ListView(id="provider-list"):
+                    for name in PROVIDERS:
+                        yield ListItem(Label(name), id=f"provider-{name}")
 
     def on_mount(self) -> None:
         self.query_one("#input").display = False
         self.query_one("#chat-view").display = False
+        self.query_one("#provider-list", ListView).focus()
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id and event.button.id.startswith("provider-"):
-            provider_key = event.button.id.removeprefix("provider-")
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        if event.item.id and event.item.id.startswith("provider-"):
+            provider_key = event.item.id.removeprefix("provider-")
             self._select_provider(provider_key)
 
     def _select_provider(self, provider_key: str) -> None:
@@ -86,7 +88,6 @@ class Agent42App(App):
         footer = self.query_one("#footer", StatusFooter)
         footer.status = "thinking"
 
-        self.query_one("#input", ChatInput).disabled = True
         self._tool_widgets = {}
 
         self.run_worker(self._run_agent_turn(), exclusive=True)
@@ -146,9 +147,7 @@ class Agent42App(App):
         footer = self.query_one("#footer", StatusFooter)
         footer.status = "idle"
 
-        input_widget = self.query_one("#input", ChatInput)
-        input_widget.disabled = False
-        input_widget.focus()
+        self.query_one("#input", ChatInput).focus()
 
 
 if __name__ == "__main__":

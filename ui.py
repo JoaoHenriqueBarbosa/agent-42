@@ -208,6 +208,9 @@ class ChatInput(TextArea):
         self._history_index: int = -1
         self._draft: str = ""
 
+    def on_blur(self) -> None:
+        self.focus()
+
     def action_submit(self) -> None:
         text = self.text.strip()
         if not text:
