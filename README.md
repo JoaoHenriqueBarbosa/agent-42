@@ -47,28 +47,16 @@ The intelligence is in the model, not in the code.
 
 ## Architecture
 
-```
-┌──────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│  Textual TUI │────▶│    agent.py      │────▶│   LLM Provider  │
-│  (app.py)    │◀────│  async run_turn  │◀────│  (any OpenAI-   │
-└──────────────┘     │                  │     │   compatible)   │
-                     │  tool dispatch:  │     └─────────────────┘
-                     │  match/case      │
-                     └──────┬───────────┘
-                            │
-               ┌────────────┼────────────┐
-               ▼            ▼            ▼
-         ┌──────────┐ ┌──────────┐ ┌──────────┐
-         │   bash   │ │read_file │ │write_file│
-         │ (docker) │ │ (host)   │ │ (host)   │
-         └──────────┘ └──────────┘ └──────────┘
-               │
-               ▼
-         ┌──────────────┐
-         │   Docker     │
-         │   sandbox    │
-         │  (no network)│
-         └──────────────┘
+```mermaid
+graph TD
+    TUI["Textual TUI<br/>(app.py)"] <--> Agent["agent.py<br/>async run_turn<br/>tool dispatch: match/case"]
+    Agent <--> LLM["LLM Provider<br/>(any OpenAI-compatible)"]
+
+    Agent --> Bash["bash<br/>(docker)"]
+    Agent --> ReadFile["read_file<br/>(host)"]
+    Agent --> WriteFile["write_file<br/>(host)"]
+
+    Bash --> Docker["Docker sandbox<br/>(no network)"]
 ```
 
 | File | Role |
