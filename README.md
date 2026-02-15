@@ -161,6 +161,29 @@ agent-42 (ctrl+c para sair)
 
 **Why `ChatOpenAI` for Anthropic?** Anthropic offers an [OpenAI-compatible endpoint](https://docs.anthropic.com/en/api/openai-sdk). Using a single `ChatOpenAI` class for all providers eliminates format differences (Anthropic returns content as a list of blocks, OpenAI as a string). Zero branching by provider in the entire codebase.
 
+## What kind of agent is this?
+
+agent-42 implements what is essentially a **native tool use agent loop** — the practical evolution of the [ReAct](https://arxiv.org/abs/2210.03629) pattern (Yao et al., 2022).
+
+ReAct formalized the cycle of *reason → act → observe → reason again*, but at the time there was no native tool use in LLM APIs. The original approach forced the model to generate explicit tokens like `Thought:`, `Action:`, `Observation:` via prompting — a hack to simulate the loop.
+
+With native tool use APIs, the pattern became infrastructure:
+
+| ReAct concept | Native implementation |
+|---|---|
+| Thought | Extended thinking / internal reasoning |
+| Action | `tool_use` block (typed, structured) |
+| Observation | `tool_result` message back to the model |
+
+agent-42 is this loop without any translation layer. The model speaks directly to the system. That's why it delivers more agency than most frameworks — there's no indirection obscuring the mechanism.
+
+### References
+
+1. **ReAct: Synergizing Reasoning and Acting in Language Models** — Yao et al., 2022. The original paper that formalized the reason-act-observe pattern. [arXiv:2210.03629](https://arxiv.org/abs/2210.03629)
+2. **Toolformer: Language Models Can Teach Themselves to Use Tools** — Schick et al., 2023. Shows that models learn to use tools in an emergent way. [arXiv:2302.04761](https://arxiv.org/abs/2302.04761)
+3. **Tool Use — Anthropic Documentation.** Documents the native tool use pattern that replaced ReAct-style prompting. [docs.anthropic.com](https://docs.anthropic.com/en/docs/build-with-claude/tool-use)
+4. **Function Calling — OpenAI Documentation.** OpenAI's equivalent implementation. [platform.openai.com](https://platform.openai.com/docs/guides/function-calling)
+
 ## Roadmap
 
 - [ ] Context compaction (summarize conversation when approaching token limit)
