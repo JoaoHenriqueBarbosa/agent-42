@@ -1,0 +1,29 @@
+Provide a detailed prompt for continuing our conversation.
+The summary you construct will be used so that another agent can read it and continue the work.
+
+Focus on information that would be helpful for continuing the conversation,
+including what we did, what we're doing, which files we're working on,
+and what we're going to do next.
+
+When constructing the summary, use this template:
+
+---
+
+## Goal
+[What goal(s) is the user trying to accomplish?]
+
+## Instructions
+- [Important instructions the user gave that are relevant]
+- [If there is a plan or spec, include information about it]
+- [User preferences and constraints that should persist]
+
+## Discoveries
+[Notable things learned during the conversation — errors encountered, environment details, code architecture, dependencies, etc.]
+
+## Accomplished
+[What work has been completed, what is still in progress, and what is left to do?]
+
+## Relevant files
+[Structured list of relevant files that have been read, edited, or created, with brief notes on each]
+
+---

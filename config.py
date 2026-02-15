@@ -12,15 +12,18 @@ PROVIDERS = {
         "api_key": os.environ["ANTHROPIC_API_KEY"],
         "base_url": os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com/v1/"),
         "model": os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-20250514"),
+        "context_limit": 200_000,
     },
     "zai": {
         "api_key": os.environ["ZAI_API_KEY"],
         "base_url": os.environ.get("ZAI_BASE_URL", "https://api.z.ai/api/coding/paas/v4"),
         "model": os.environ.get("ZAI_MODEL", "GLM-4.5-air"),
+        "context_limit": 128_000,
     },
     "openai": {
         "api_key": os.environ["OPENAI_API_KEY"],
         "base_url": os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
         "model": os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
+        "context_limit": 128_000,
     },
 }
