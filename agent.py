@@ -193,7 +193,8 @@ def is_overflow(token_count, messages, context_limit):
 
 
 def prune(messages):
-    """Clear old tool outputs to reduce context size without full summarization."""
+    """Clear old tool outputs to reduce context size without full summarization.
+    Returns a new message list (original is not modified)."""
     user_count = 0
     cutoff = len(messages)
     for i in range(len(messages) - 1, -1, -1):
@@ -210,48 +211,58 @@ def prune(messages):
             tool_indices.append((i, est))
 
     if not tool_indices:
-        return
+        return messages
 
     protected = 0
-    pruneable = []
+    pruneable = set()
     for idx, est in reversed(tool_indices):
         if protected < PRUNE_PROTECT:
             protected += est
         else:
-            pruneable.append(idx)
+            pruneable.add(idx)
 
     total_pruneable = sum(len(messages[i].content) // CHARS_PER_TOKEN for i in pruneable)
     if total_pruneable < PRUNE_MINIMUM:
-        return
+        return messages
 
-    for idx in pruneable:
-        messages[idx] = ToolMessage(
-            content="[output cleared]",
-            tool_call_id=messages[idx].tool_call_id,
-        )
+    result = []
+    for i, msg in enumerate(messages):
+        if i in pruneable:
+            result.append(ToolMessage(
+                content="[output cleared]",
+                tool_call_id=msg.tool_call_id,
+            ))
+        else:
+            result.append(msg)
     print(f"[prune] Cleared {len(pruneable)} old tool outputs.")
+    return result
 
 
 def compact(llm_base, messages):
-    """Summarize the conversation and return a fresh message list."""
+    """Summarize the conversation and return a fresh message list.
+    On failure, returns the original messages so nothing is lost."""
     print("\n[auto-compact] Context approaching limit. Summarizing conversation...")
-    compact_messages = [
-        SystemMessage(content=COMPACT_SYSTEM),
-        *messages[1:],
-        HumanMessage(content=COMPACT_PROMPT),
-    ]
-    summary_response = llm_base.invoke(compact_messages)
-    summary = summary_response.content
-    print("[auto-compact] Done. Continuing with summarized context.\n")
-    return [
-        SystemMessage(content=SYSTEM_PROMPT),
-        HumanMessage(content="What did we do so far?"),
-        AIMessage(content=summary),
-        HumanMessage(
-            content="Continue where you left off. If you have next steps, "
-            "proceed. Otherwise, ask for clarification."
-        ),
-    ]
+    try:
+        compact_messages = [
+            SystemMessage(content=COMPACT_SYSTEM),
+            *messages[1:],
+            HumanMessage(content=COMPACT_PROMPT),
+        ]
+        summary_response = llm_base.invoke(compact_messages)
+        summary = summary_response.content
+        print("[auto-compact] Done. Continuing with summarized context.\n")
+        return [
+            SystemMessage(content=SYSTEM_PROMPT),
+            HumanMessage(content="What did we do so far?"),
+            AIMessage(content=summary),
+            HumanMessage(
+                content="Continue where you left off. If you have next steps, "
+                "proceed. Otherwise, ask for clarification."
+            ),
+        ]
+    except Exception as e:
+        print(f"[auto-compact] Failed: {e}. Keeping original conversation.\n")
+        return messages
 
 
 # --- LLM ---
@@ -331,7 +342,7 @@ def main():
                 result = execute_tool(tc["name"], tc["args"])
                 messages.append(ToolMessage(content=result, tool_call_id=tc["id"]))
 
-        prune(messages)
+        messages = prune(messages)
 
 if __name__ == "__main__":
     main()
