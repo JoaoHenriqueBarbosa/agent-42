@@ -26,3 +26,16 @@ def stream_response(llm, messages, on_chunk=None):
         if chunk.content and on_chunk:
             on_chunk(chunk.content)
     return full
+
+
+async def astream_response(llm, messages, on_chunk=None):
+    """Versão async de stream_response usando astream."""
+    full = None
+    async for chunk in llm.astream(messages):
+        if full is None:
+            full = chunk
+        else:
+            full = full + chunk
+        if chunk.content and on_chunk:
+            await on_chunk(chunk.content)
+    return full

@@ -1,6 +1,6 @@
 # agent-42
 
-A minimal autonomous coding agent. No frameworks, no magic — just a while loop with tool use.
+A minimal autonomous coding agent. No frameworks, no magic — just a while loop with tool use. Now with a rich TUI powered by [Textual](https://textual.textualize.io/).
 
 ```
 > Create a Flask API with a /health endpoint
@@ -39,8 +39,8 @@ That's it. The intelligence is in the model, not in the code.
 
 ```
 ┌─────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│   Terminal   │────▶│    agent.py      │────▶│   LLM Provider  │
-│  (stdin/out) │◀────│  (~200 lines)    │◀────│  (any OpenAI-   │
+│  Textual TUI │────▶│    agent.py      │────▶│   LLM Provider  │
+│  (app.py)    │◀────│  async run_turn  │◀────│  (any OpenAI-   │
 └─────────────┘     │                  │     │   compatible)   │
                     │  tool dispatch:  │     └─────────────────┘
                     │  match/case      │
@@ -61,6 +61,9 @@ That's it. The intelligence is in the model, not in the code.
         └──────────────┘
 ```
 
+- **app.py** — Textual App entrypoint, composes the TUI and runs the agent loop as an async worker
+- **ui.py** — Textual widgets: ChatView, ChatMessage (markdown streaming with debounce), ToolWidget (collapsible), ChatInput (history, Enter/Shift+Enter), StatusFooter
+- **agent.py** — async `run_turn()` function with callbacks dict for UI decoupling; also keeps CLI `main()` fallback
 - **bash** runs inside a Docker container with no network access
 - **read_file** and **write_file** operate on the host through a shared `workspace/` volume
 - All providers go through a single `ChatOpenAI` — LangChain is used only as a provider adapter
@@ -99,7 +102,7 @@ cd agent-42
 # Python dependencies
 python -m venv venv
 source venv/bin/activate
-pip install langchain-openai python-dotenv
+pip install langchain-openai python-dotenv textual
 
 # Docker sandbox
 docker compose up -d
@@ -134,21 +137,16 @@ ZAI_MODEL=GLM-4.5-air
 
 ## Run
 
+**TUI (recommended):**
+
+```bash
+venv/bin/python app.py
+```
+
+**CLI (fallback):**
+
 ```bash
 venv/bin/python agent.py
-```
-
-```
-Provider:
-  1) anthropic
-  2) zai
-  3) openai
-Escolha [1-3]: 1
-→ anthropic
-
-agent-42 (ctrl+c para sair)
-
-> _
 ```
 
 ## Design decisions
@@ -186,7 +184,8 @@ agent-42 is this loop without any translation layer. The model speaks directly t
 
 ## Roadmap
 
-- [ ] Context compaction (summarize conversation when approaching token limit)
+- [x] Context compaction (summarize conversation when approaching token limit)
+- [x] Textual TUI with markdown rendering, tool widgets, streaming
 - [ ] Ctrl+C to cancel running tools
 - [ ] Session persistence to disk
 - [ ] System prompt refinement
