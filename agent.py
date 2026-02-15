@@ -1,322 +1,34 @@
-"""ClaudeAgent MVP — o loop mais simples possível."""
+"""agent-42 — minimal autonomous coding agent."""
 
 import warnings
 warnings.filterwarnings("ignore", message="Core Pydantic V1")
 
 import json
-import os
-import subprocess
 import sys
 
-from langchain_openai import ChatOpenAI
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 
 from config import PROVIDERS
+from prompts import SYSTEM_PROMPT
+from llm import make_llm, stream_response
+from tools import execute_tool
+from context import is_overflow, compact, prune, get_token_count
+from ui import welcome, goodbye, get_user_input, show_chunk, show_response_end, show_tool_call, show_info, choose_provider
 
-BASE_DIR = os.path.dirname(__file__)
-WORKSPACE = os.path.join(BASE_DIR, "workspace")
-CONTAINER = "agent-42-sandbox"
-BASH_TIMEOUT = 30
-
-with open(os.path.join(BASE_DIR, "system_prompt.txt")) as f:
-    SYSTEM_PROMPT = f.read()
-
-with open(os.path.join(BASE_DIR, "compact_prompt.txt")) as f:
-    COMPACT_PROMPT = f.read()
-
-COMPACT_BUFFER = 20_000
-CHARS_PER_TOKEN = 4
-PRUNE_PROTECT = 40_000
-PRUNE_MINIMUM = 20_000
-
-COMPACT_SYSTEM = (
-    "You are a summarization assistant. When asked to summarize, provide a "
-    "detailed but concise summary of the conversation. Focus on information "
-    "that would be helpful for continuing the conversation. Do not respond to "
-    "any questions in the conversation, only output the summary."
-)
-
-TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "bash",
-            "description": "Execute a bash command. The working directory is /workspace. Timeout: 30s.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "command": {"type": "string", "description": "The bash command to execute"},
-                },
-                "required": ["command"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "read_file",
-            "description": "Read a file from the workspace. Returns content with line numbers.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "Relative path within the workspace"},
-                    "start_line": {"type": "integer", "description": "First line (1-indexed)"},
-                    "end_line": {"type": "integer", "description": "Last line (1-indexed)"},
-                },
-                "required": ["path"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "write_file",
-            "description": "Create or overwrite a file in the workspace.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "Relative path within the workspace"},
-                    "content": {"type": "string", "description": "Full content to write"},
-                },
-                "required": ["path", "content"],
-            },
-        },
-    },
-]
-
-
-# --- Tools ---
-
-def execute_tool(name, args):
-    match name:
-        case "bash":
-            return tool_bash(**args)
-        case "read_file":
-            return tool_read_file(**args)
-        case "write_file":
-            return tool_write_file(**args)
-        case _:
-            return f"Unknown tool: {name}"
-
-def tool_bash(command):
-    try:
-        result = subprocess.run(
-            ["docker", "exec", CONTAINER, "bash", "-c", command],
-            capture_output=True, text=True, timeout=BASH_TIMEOUT,
-        )
-        output = result.stdout + result.stderr
-        return output.strip() or "(no output)"
-    except subprocess.TimeoutExpired:
-        return f"Error: command timed out after {BASH_TIMEOUT}s"
-    except Exception as e:
-        return f"Error: {e}"
-
-def _safe_path(path):
-    full = os.path.join(WORKSPACE, path)
-    if not os.path.abspath(full).startswith(os.path.abspath(WORKSPACE)):
-        return None
-    return full
-
-def tool_read_file(path, start_line=None, end_line=None):
-    full_path = _safe_path(path)
-    if not full_path:
-        return "Error: path outside workspace"
-    try:
-        with open(full_path) as f:
-            lines = f.readlines()
-    except FileNotFoundError:
-        return f"Error: file not found: {path}"
-    except Exception as e:
-        return f"Error: {e}"
-
-    start = (start_line or 1) - 1
-    end = end_line or len(lines)
-    numbered = [f"{i:4d} | {l.rstrip()}" for i, l in enumerate(lines[start:end], start=start + 1)]
-    return "\n".join(numbered)
-
-def tool_write_file(path, content):
-    full_path = _safe_path(path)
-    if not full_path:
-        return "Error: path outside workspace"
-    try:
-        parent = os.path.dirname(full_path)
-        if parent:
-            os.makedirs(parent, exist_ok=True)
-        with open(full_path, "w") as f:
-            f.write(content)
-        return f"OK: wrote {len(content)} bytes to {path}"
-    except Exception as e:
-        return f"Error: {e}"
-
-
-# --- Auto Compact ---
-
-def get_token_count(response):
-    """Extract total token count from LLM response, or None if unavailable."""
-    meta = getattr(response, "usage_metadata", None)
-    if meta:
-        input_t = meta.get("input_tokens", 0)
-        output_t = meta.get("output_tokens", 0)
-        if input_t > 0:
-            return input_t + output_t
-    resp_meta = getattr(response, "response_metadata", None)
-    if resp_meta:
-        usage = resp_meta.get("token_usage") or resp_meta.get("usage", {})
-        if isinstance(usage, dict):
-            prompt_t = usage.get("prompt_tokens", 0) or usage.get("input_tokens", 0)
-            compl_t = usage.get("completion_tokens", 0) or usage.get("output_tokens", 0)
-            if prompt_t > 0:
-                return prompt_t + compl_t
-    return None
-
-
-def estimate_tokens(messages):
-    """Fallback: estimate total tokens using character heuristic (len/4)."""
-    total_chars = 0
-    for msg in messages:
-        if isinstance(msg.content, str):
-            total_chars += len(msg.content)
-        elif isinstance(msg.content, list):
-            for part in msg.content:
-                total_chars += len(json.dumps(part)) if isinstance(part, dict) else len(str(part))
-        if hasattr(msg, "tool_calls") and msg.tool_calls:
-            total_chars += len(json.dumps(msg.tool_calls, default=str))
-    return total_chars // CHARS_PER_TOKEN
-
-
-def is_overflow(token_count, messages, context_limit):
-    """Check if conversation tokens are approaching the context limit."""
-    if context_limit <= 0:
-        return False
-    count = token_count if token_count else estimate_tokens(messages)
-    return count >= context_limit - COMPACT_BUFFER
-
-
-def prune(messages):
-    """Clear old tool outputs to reduce context size without full summarization.
-    Returns a new message list (original is not modified)."""
-    user_count = 0
-    cutoff = len(messages)
-    for i in range(len(messages) - 1, -1, -1):
-        if isinstance(messages[i], HumanMessage):
-            user_count += 1
-            if user_count >= 2:
-                cutoff = i
-                break
-
-    tool_indices = []
-    for i in range(cutoff):
-        if isinstance(messages[i], ToolMessage) and messages[i].content != "[output cleared]":
-            est = len(messages[i].content) // CHARS_PER_TOKEN
-            tool_indices.append((i, est))
-
-    if not tool_indices:
-        return messages
-
-    protected = 0
-    pruneable = set()
-    for idx, est in reversed(tool_indices):
-        if protected < PRUNE_PROTECT:
-            protected += est
-        else:
-            pruneable.add(idx)
-
-    total_pruneable = sum(len(messages[i].content) // CHARS_PER_TOKEN for i in pruneable)
-    if total_pruneable < PRUNE_MINIMUM:
-        return messages
-
-    result = []
-    for i, msg in enumerate(messages):
-        if i in pruneable:
-            result.append(ToolMessage(
-                content="[output cleared]",
-                tool_call_id=msg.tool_call_id,
-            ))
-        else:
-            result.append(msg)
-    print(f"[prune] Cleared {len(pruneable)} old tool outputs.")
-    return result
-
-
-def compact(llm_base, messages):
-    """Summarize the conversation and return a fresh message list.
-    On failure, returns the original messages so nothing is lost."""
-    print("\n[auto-compact] Context approaching limit. Summarizing conversation...")
-    try:
-        compact_messages = [
-            SystemMessage(content=COMPACT_SYSTEM),
-            *messages[1:],
-            HumanMessage(content=COMPACT_PROMPT),
-        ]
-        summary_response = llm_base.invoke(compact_messages)
-        summary = summary_response.content
-        print("[auto-compact] Done. Continuing with summarized context.\n")
-        return [
-            SystemMessage(content=SYSTEM_PROMPT),
-            HumanMessage(content="What did we do so far?"),
-            AIMessage(content=summary),
-            HumanMessage(
-                content="Continue where you left off. If you have next steps, "
-                "proceed. Otherwise, ask for clarification."
-            ),
-        ]
-    except Exception as e:
-        print(f"[auto-compact] Failed: {e}. Keeping original conversation.\n")
-        return messages
-
-
-# --- LLM ---
-
-def make_llm(provider):
-    base = ChatOpenAI(
-        model=provider["model"],
-        api_key=provider["api_key"],
-        base_url=provider["base_url"],
-        stream_usage=True,
-    )
-    return base, base.bind_tools(TOOLS)
-
-def choose_provider():
-    names = list(PROVIDERS)
-    print("Provider:")
-    for i, name in enumerate(names, 1):
-        print(f"  {i}) {name}")
-    while True:
-        choice = input(f"Escolha [1-{len(names)}]: ").strip()
-        if choice.isdigit() and 1 <= int(choice) <= len(names):
-            selected = names[int(choice) - 1]
-            print(f"→ {selected}\n")
-            return PROVIDERS[selected]
-
-
-# --- O Loop ---
-
-def stream_response(llm, messages):
-    """Streama a resposta e retorna a mensagem completa."""
-    full = None
-    for chunk in llm.stream(messages):
-        if full is None:
-            full = chunk
-        else:
-            full = full + chunk
-        if chunk.content:
-            print(chunk.content, end="", flush=True)
-    return full
 
 def main():
-    provider = choose_provider()
+    provider = choose_provider(PROVIDERS)
     llm_base, llm = make_llm(provider)
     context_limit = provider.get("context_limit", 128_000)
     messages = [SystemMessage(content=SYSTEM_PROMPT)]
     last_token_count = None
-    print("agent-42 (ctrl+c para sair)\n")
+    welcome()
 
     while True:
         try:
-            user_input = input("> ")
+            user_input = get_user_input()
         except (KeyboardInterrupt, EOFError):
-            print("\nbye")
-            sys.exit(0)
+            goodbye()
 
         if not user_input.strip():
             continue
@@ -325,24 +37,32 @@ def main():
 
         while True:
             if is_overflow(last_token_count, messages, context_limit):
-                messages = compact(llm_base, messages)
+                show_info("[auto-compact] Context approaching limit. Summarizing conversation...")
+                messages, status = compact(llm_base, messages)
+                if status == "ok":
+                    show_info("[auto-compact] Done. Continuing with summarized context.\n")
+                else:
+                    show_info(f"[auto-compact] {status}. Keeping original conversation.\n")
                 last_token_count = None
 
-            response = stream_response(llm, messages)
+            response = stream_response(llm, messages, on_chunk=show_chunk)
             messages.append(response)
 
             last_token_count = get_token_count(response)
 
             if not response.tool_calls:
-                print("\n")
+                show_response_end()
                 break
 
             for tc in response.tool_calls:
-                print(f"\n[{tc['name']}] {json.dumps(tc['args'], ensure_ascii=False)}")
+                show_tool_call(tc["name"], tc["args"])
                 result = execute_tool(tc["name"], tc["args"])
                 messages.append(ToolMessage(content=result, tool_call_id=tc["id"]))
 
-        messages = prune(messages)
+        messages, pruned = prune(messages)
+        if pruned:
+            show_info(f"[prune] Cleared {pruned} old tool outputs.")
+
 
 if __name__ == "__main__":
     main()
