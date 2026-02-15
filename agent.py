@@ -9,7 +9,7 @@ import subprocess
 import sys
 
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from config import PROVIDERS
 
@@ -20,6 +20,31 @@ BASH_TIMEOUT = 30
 
 with open(os.path.join(BASE_DIR, "system_prompt.txt")) as f:
     SYSTEM_PROMPT = f.read()
+
+COMPACT_BUFFER = 20_000
+CHARS_PER_TOKEN = 4
+
+COMPACT_PROMPT = """\
+Summarize our conversation so far so another instance of you can continue the work.
+Be detailed about what was done and what needs to happen next.
+
+Use this template:
+
+## Goal
+What is the user trying to accomplish?
+
+## Instructions
+- Important instructions or constraints from the user
+
+## Discoveries
+Key things learned during the conversation.
+
+## Accomplished
+What was completed, what is in progress, and what remains?
+
+## Relevant files
+Files that were read, edited, or created (with brief notes).
+"""
 
 TOOLS = [
     {
@@ -134,14 +159,53 @@ def tool_write_file(path, content):
         return f"Error: {e}"
 
 
+# --- Auto Compact ---
+
+def estimate_tokens(messages):
+    """Estimate total tokens in the conversation using character heuristic."""
+    total_chars = 0
+    for msg in messages:
+        if isinstance(msg.content, str):
+            total_chars += len(msg.content)
+        elif isinstance(msg.content, list):
+            for part in msg.content:
+                total_chars += len(json.dumps(part)) if isinstance(part, dict) else len(str(part))
+        if hasattr(msg, "tool_calls") and msg.tool_calls:
+            total_chars += len(json.dumps(msg.tool_calls, default=str))
+    return total_chars // CHARS_PER_TOKEN
+
+
+def is_overflow(messages, context_limit):
+    """Check if conversation tokens are approaching the context limit."""
+    if context_limit <= 0:
+        return False
+    return estimate_tokens(messages) >= context_limit - COMPACT_BUFFER
+
+
+def compact(llm_base, messages):
+    """Summarize the conversation and return a fresh message list."""
+    print("\n[auto-compact] Context approaching limit. Summarizing conversation...")
+    compact_messages = messages + [HumanMessage(content=COMPACT_PROMPT)]
+    summary_response = llm_base.invoke(compact_messages)
+    summary = summary_response.content
+    print("[auto-compact] Done. Continuing with summarized context.\n")
+    return [
+        SystemMessage(content=SYSTEM_PROMPT),
+        HumanMessage(content="What did we do so far?"),
+        AIMessage(content=summary),
+        HumanMessage(content="Continue where you left off. If you have next steps, proceed. Otherwise, ask for clarification."),
+    ]
+
+
 # --- LLM ---
 
 def make_llm(provider):
-    return ChatOpenAI(
+    base = ChatOpenAI(
         model=provider["model"],
         api_key=provider["api_key"],
         base_url=provider["base_url"],
-    ).bind_tools(TOOLS)
+    )
+    return base, base.bind_tools(TOOLS)
 
 def choose_provider():
     names = list(PROVIDERS)
@@ -171,7 +235,9 @@ def stream_response(llm, messages):
     return full
 
 def main():
-    llm = make_llm(choose_provider())
+    provider = choose_provider()
+    llm_base, llm = make_llm(provider)
+    context_limit = provider.get("context_limit", 128_000)
     messages = [SystemMessage(content=SYSTEM_PROMPT)]
     print("agent-42 (ctrl+c para sair)\n")
 
@@ -190,6 +256,9 @@ def main():
         # O loop do agente: chama a API, se vier tool_use executa e manda de volta.
         # Quando vier só texto, exibe e volta pro input do usuário.
         while True:
+            if is_overflow(messages, context_limit):
+                messages = compact(llm_base, messages)
+
             response = stream_response(llm, messages)
             messages.append(response)
 
