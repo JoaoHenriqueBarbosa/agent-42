@@ -1,0 +1,35 @@
+name: Badges
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  badges:
+    name: Refresh metric badges
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Compute metrics
+        id: m
+        run: |
+          LOC=$(find . -name '*.py' -not -path '*/.venv/*' -print0 | xargs -0 wc -l | tail -1 | awk '{print $1}')
+          echo "loc=$LOC" >> "$GITHUB_OUTPUT"
+      - name: Write badge endpoints
+        run: |
+          mkdir -p .github/badges
+          printf '{"schemaVersion":1,"label":"lines of Python","message":"%s","color":"blue"}\n' "${{ steps.m.outputs.loc }}" > .github/badges/loc.json
+      - name: Commit if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if ! git diff --quiet .github/badges; then
+            git add .github/badges
+            git commit -m "ci(badges): refresh metrics [skip ci]"
+            git push
+          else
+            echo "badges unchanged"
+          fi
