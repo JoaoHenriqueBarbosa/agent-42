@@ -5,3 +5,31 @@ __pycache__/
 *.pyc
 .brv/
 .claude/
+# >>> offload jet-dev (regenerável e segredos)
+target/
+target-*/
+target[0-9]*/
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.pyc
+dist/
+build/
+.gradle/
+.cxx/
+.claude/worktrees/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.jks
+*.keystore
+id_rsa*
+id_ed25519*
+credentials*.json
+.DS_Store
+*.log
+# <<< offload jet-dev
